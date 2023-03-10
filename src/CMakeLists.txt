@@ -9,4 +9,5 @@ if (!WIN32)
 endif (!WIN32)
 
 AUX_SOURCE_DIRECTORY(. src)
-ADD_EXECUTABLE(main ${src})
+include_directories(include)
+ADD_EXECUTABLE(main ${src} include/Robot.h include/Robot.cpp include/Station.cpp include/Station.h)
