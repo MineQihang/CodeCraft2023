@@ -1,0 +1,1 @@
+robot_gui.exe ..\src\cmake-build-debug\main.exe -m maps\1.txt
