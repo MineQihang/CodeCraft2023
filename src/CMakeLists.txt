@@ -8,6 +8,6 @@ if (!WIN32)
     link_libraries(pthread rt m)
 endif (!WIN32)
 
-AUX_SOURCE_DIRECTORY(. src)
+aux_source_directory(. src)
 include_directories(include)
-ADD_EXECUTABLE(main ${src} include/Robot.h include/Robot.cpp include/Station.cpp include/Station.h)
+add_executable(main ${src})
