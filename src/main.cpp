@@ -82,12 +82,18 @@ public:
     int product_state;
     std::bitset<OBJECT_TYPES_NUM + 1> chosen_state;
     std::bitset<OBJECT_TYPES_NUM + 1> need_state;
+    int product;
 
     Station(int id, int type, double x, double y): id(id), type(type), x(x), y(y) {
         chosen_state = 0;
         product_state = false;
         prod_time = 0x3f3f3f3f;
         need_state = basic_stations[type].material_bin;
+        product = basic_stations[type].product;
+    }
+
+    double calc_dis(Station& other) const {
+        return sqrt(pow(this->x - other.x, 2) + pow(this->y - other.y, 2));
     }
 };
 
@@ -104,6 +110,10 @@ public:
     double direction; // 朝向
 
     int to_station; // 想要去的station的id：-1, [0, station_num - 1]
+    double mass{}; // 质量
+    double alpha{}; // 角加速度
+    double radius{}; // 半径
+    double a{}; // 加速度
 
     Robot(int id, double x, double y): id(id), x(x), y(y) {
         to_station = -1;
@@ -115,6 +125,17 @@ public:
         line_speed_x = 0;
         line_speed_y = 0;
         direction = 0;
+        update_status(false);
+    }
+
+    void update_status(bool state) { // 0 -> NOT busy, 1 -> busy
+        // 属性状态
+        this->to_station = -1;
+        // 物理状态
+        this->radius = state ? ROBOT_RADIUS_BUSY : ROBOT_RADIUS;
+        this->mass = PI * this->radius * this->radius * ROBOT_DENSITY;
+        this->alpha = ROBOT_TORQUE * 2 / (this->mass * this->radius * this->radius);
+        this->a = ROBOT_MAX_FORCE / this->mass;
     }
 
     void forward(double speed) const {
@@ -137,36 +158,45 @@ public:
 
     void buy(Station& station) {
         /* 购买当前工作台的物品，以输入数据的身处工作台ID为准。
+         * @param station: 购买东西的工作台
          */
         printf("buy %d\n", this->id);
-        this->to_station = -1;
-        station.chosen_state[this->object_type] = false;
-        this->object_type = 0;
+        station.chosen_state[station.product] = false;
+        this->object_type = station.product;
+        update_status(true);
     }
 
     void sell(Station& station) {
         /* 出售物品给当前工作台，以输入数据的身处工作台ID为准。
+         * @param station: 出售东西的工作台
          */
         printf("sell %d\n", this->id);
-        this->to_station = -1;
         station.chosen_state[this->object_type] = false;
         this->object_type = 0;
+        update_status(false);
     }
 
     void destroy(Station& station) {
         /* 销毁物品。
+         * @param station: 销毁物品要运往的地方
          */
         printf("destroy %d\n", this->id);
-        this->to_station = -1;
         station.chosen_state[this->object_type] = false;
         this->object_type = 0;
+        update_status(false);
     }
 
     double calc_dis(Robot& other) const {
+        /* 计算当前机器人到另一个机器人的欧式距离
+         * @param other: 其他机器人
+         */
         return sqrt(pow(this->x - other.x, 2) + pow(this->y - other.y, 2));
     }
 
     double calc_dis(Station& station) const {
+        /* 计算当前机器人到一个工作台的欧氏距离
+         * @param station: 工作台
+         */
         return sqrt(pow(this->x - station.x, 2) + pow(this->y - station.y, 2));
     }
 };
@@ -177,6 +207,21 @@ vector<Station> stations;
 vector<int> station_seq;
 int curr_money;
 int station_num;
+vector<vector<double>> dis_matrix;
+
+// 初始化
+void init() {
+    // station id序列，方便之后排序
+    for(int i = 0; i < station_num; i ++) station_seq.push_back(i);
+    // 计算工作台间的距离矩阵
+    dis_matrix = vector<vector<double>>(station_num, vector<double>(station_num, 0x3f3f3f3f));
+    for(int i = 0; i < station_num; i ++) {
+        dis_matrix[i][i] = 0;
+        for(int j = i + 1; j < station_num; j ++) {
+            dis_matrix[i][j] = dis_matrix[j][i] = stations[i].calc_dis(stations[j]);
+        }
+    }
+}
 
 // 读取地图
 void readMap() {
@@ -189,14 +234,14 @@ void readMap() {
     char s[1024];
     while (fgets(s, sizeof s, stdin)) {
         if (s[0] == 'O' && s[1] == 'K') {
-            for(int i = 0; i < station_num; i ++) station_seq.push_back(i);
+            init();
             return ;
         }
         size_t len = strlen(s);
         y --;
         for(int x = 0; x < len; x ++) {
-            if(s[x] == 'A') robots.emplace_back(robot_count ++, (double)x / 2 / READ_MAP_SIZE, (double)y / 2 / READ_MAP_SIZE);
-            else if(s[x] >= '0' && s[x] <= '9') stations.emplace_back(station_num ++, s[x] - '0', (double)x / 2 / READ_MAP_SIZE, (double)y / 2 / READ_MAP_SIZE);
+            if(s[x] == 'A') robots.emplace_back(robot_count ++, (double)x / READ_MAP_SIZE * MAP_SIZE, (double)y / READ_MAP_SIZE * MAP_SIZE);
+            else if(s[x] >= '0' && s[x] <= '9') stations.emplace_back(station_num ++, s[x] - '0', (double)x / READ_MAP_SIZE * MAP_SIZE, (double)y / READ_MAP_SIZE * MAP_SIZE);
         }
     }
 }
@@ -209,7 +254,9 @@ void readFrameInput() {
     scanf("%d", &station_num);
     // 每个工作台的状态
     for(int i = 0; i < station_num; i ++) {
+//        double tempx = 0, tempy = 0;
         scanf("%d %lf %lf %d %d %d", &stations[i].type, &stations[i].x, &stations[i].y, &stations[i].prod_time, &stations[i].material_state, &stations[i].product_state);
+
     }
     for(int i = 0; i < ROBOTS_NUM; i ++) {
         scanf("%d %d %lf %lf %lf %lf %lf %lf %lf %lf", &robots[i].station_id, &robots[i].object_type, &robots[i].time_val, &robots[i].collision_val, &robots[i].angular_speed, &robots[i].line_speed_x, &robots[i].line_speed_y, &robots[i].direction, &robots[i].x, &robots[i].y);
@@ -221,6 +268,7 @@ void readFrameInput() {
     fgets(s, sizeof s, stdin);
 }
 
+// 给定两个theta，求差距（[-pi, pi]）
 inline double get_theta_diff(double from, double to) {
     double diff = to - from;
     if(diff > PI) return PI - diff;
@@ -228,49 +276,103 @@ inline double get_theta_diff(double from, double to) {
     return diff;
 }
 
+// 根据始末坐标控制速度
 inline double get_speed(Robot& robot, Station& station) {
     double d = robot.calc_dis(station);
+//    if(robot.line_speed * robot.line_speed / 2 / robot.a >= d) return 0;
     if(d <= 2 * NEAR_DISTANCE && robot.line_speed > 1) return 0;
+//    if(robot.line_speed > robot.angular_speed * d)
+//        return (1 - exp(-d)) * SPEED_POSITIVE_MAX;
     return SPEED_POSITIVE_MAX; // (1 - exp(-d)) * SPEED_POSITIVE_MAX;
 }
 
+// 判断产品有没有被其他的地方所需要
 bool judge_product(int object_type) {
     if(object_type <= 0) return false;
     for(int i = 0; i < station_num; i ++) {
-        if(stations[i].need_state[object_type] && !stations[i].material_state[object_type]) return true;
+        if(!stations[i].chosen_state[object_type] && stations[i].need_state[object_type] && !stations[i].material_state[object_type]) return true;
     }
     return false;
 }
 
+// 符号函数
+inline int sgn(double x) {
+    return x >= 0 ? 1 : -1;
+}
+
+// 获取需要当前工作台产物的所有工作台的最短距离
+double get_min_buyer_dis(Station& station) {
+    double ans = 0X3f3f3f3f;
+    for(int i = 0; i < station_num; i ++) {
+        if(stations[i].need_state[station.product]) ans = min(ans, dis_matrix[i][station.id]);
+    }
+    return ans;
+}
+
+// 获取当前机器人离碰撞的最短距离
+double get_min_col_dis(Robot& robot) {
+    double min_dis = 0x3f3f3f3f;
+    // 距离机器人
+    for(auto& other : robots) {
+        if(robot.id != other.id) {
+            min_dis = min(min_dis, robot.calc_dis(other));
+        }
+    }
+    // 距离墙壁
+    double d1 = min(robot.x, MAP_SIZE - robot.x);
+    double d2 = min(robot.y, MAP_SIZE - robot.y);
+    min_dis = min(min_dis, min(d1, d2));
+    return min_dis;
+}
+
+// 选择要去哪个工作台
 Station* chooseStation(Robot& robot) {
     if(robot.to_station != -1) {
         if(robot.object_type) {
-            if(!stations[robot.to_station].material_state[robot.object_type])
+            if(!stations[robot.to_station].material_state[robot.object_type]){
                 return &stations[robot.to_station];
+            } else {
+                stations[robot.to_station].chosen_state[robot.object_type] = false;
+                robot.to_station = -1;
+            }
         } else {
-            if(judge_product(basic_stations[stations[robot.to_station].type].product))
-                return &stations[robot.to_station];
+            if(judge_product(stations[robot.to_station].product)) {
+                auto& prv_station = stations[robot.to_station];
+                robot.to_station = -1;
+                auto* station_ptr = chooseStation(robot);
+                if(station_ptr != nullptr && robot.calc_dis(*station_ptr) + 20 < robot.calc_dis(prv_station)) {
+                    prv_station.chosen_state[prv_station.product] = false;
+                    robot.to_station = station_ptr->id;
+                    station_ptr->chosen_state[station_ptr->product] = true;
+                    return station_ptr;
+                } else if(station_ptr != nullptr) {
+                    station_ptr->chosen_state[station_ptr->product] = false;
+                    robot.to_station = prv_station.id;
+                }
+                return &prv_station;
+            } else {
+                stations[robot.to_station].chosen_state[stations[robot.to_station].product] = false;
+                robot.to_station = -1;
+            }
         }
     }
     sort(station_seq.begin(), station_seq.end(), [&](const int& x, const int& y) {
-        double dx = sqrt(pow(stations[x].x - robot.x, 2) + pow(stations[x].y - robot.y, 2));
-        double dy = sqrt(pow(stations[y].x - robot.x, 2) + pow(stations[y].y - robot.y, 2));
-//        if(fabs(dx - dy) < 25)
-//            return stations[x].type > stations[y].type;
-//        else
-            return dx < dy;
+//        if(stations[x].type == stations[y].type)
+            return robot.calc_dis(stations[x]) < robot.calc_dis(stations[y]);
+//        else return stations[x].type > stations[y].type;
+//        return robot.calc_dis(stations[x]) + get_min_buyer_dis(stations[x]) < robot.calc_dis(stations[y])+ get_min_buyer_dis(stations[y]);
     });
     for(int j = 0; j < station_num; j ++) {
         int i = station_seq[j];
-        if(!stations[i].chosen_state[robot.object_type]) {
-            if(robot.object_type) {
-                if(stations[i].need_state[robot.object_type] && !stations[i].material_state[robot.object_type]) {
-                    stations[i].chosen_state[robot.object_type] = true;
-                    robot.to_station = i;
-                    return &stations[i];
-                }
-            } else if(stations[i].product_state && judge_product(basic_stations[stations[i].type].product)) {
+        if(robot.object_type) { // 带着东西的
+            if(!stations[i].chosen_state[robot.object_type] && stations[i].need_state[robot.object_type] && !stations[i].material_state[robot.object_type]) {
                 stations[i].chosen_state[robot.object_type] = true;
+                robot.to_station = i;
+                return &stations[i];
+            }
+        } else { // 没带
+            if(stations[i].product_state && !stations[i].chosen_state[stations[i].product] && judge_product(stations[i].product)) {
+                stations[i].chosen_state[stations[i].product] = true;
                 robot.to_station = i;
                 return &stations[i];
             }
@@ -279,53 +381,38 @@ Station* chooseStation(Robot& robot) {
     return nullptr;
 }
 
+// 调整机器人姿态（预期角速度和线速度）
 void adjustRobotStatus(Robot& robot, Station& station) {
-    // 计算当前robot和其他robot的位置
-    double min_dis = 0x3f3f3f3f;
-    double angular_diff = 0;
-    for(auto& other : robots) {
-        if(robot.id != other.id) {
-            double temp = robot.calc_dis(other);
-            if(temp < min_dis) {
-                min_dis = temp;
-                angular_diff = fabs(robot.direction - other.direction);
-            }
-        }
-    }
     // 确定转向
     double to_direction = atan2(station.y - robot.y, station.x - robot.x);
-    double angular_speed = get_theta_diff(robot.direction, to_direction);
-//    if(min_dis < 3 * ROBOT_RADIUS_BUSY) {
-//        robot.rotate(angular_speed + PI/4);
-//    }else
-        robot.rotate(angular_speed * 2);
+    double theta_diff = get_theta_diff(robot.direction, to_direction); // robot的朝向和与station的相对角位置的差
+    double delta = theta_diff; // 真正要偏转的角度
+    double angular_speed = pow(robot.angular_speed, 2) / robot.alpha / 2 >= fabs(delta) ? 0 : sgn(delta) * PI;
     // 确定速度
-//    robot.forward(get_speed(robot, station));
-    if(fabs(angular_speed) <= PI / 8) robot.forward(get_speed(robot, station));
-    else robot.forward(0);
+    double line_speed = get_speed(robot, station);
+    // 调整一下
+//    double min_dis = get_min_col_dis(robot);
+//    if(min_dis <= 2 * ROBOT_RADIUS_BUSY + NEAR_DISTANCE) line_speed *= 0.8;
+    robot.rotate(angular_speed);
+    robot.forward(line_speed);
 }
 
+// 单独为每个机器人分配策略
 void generateStrategy(Robot& robot) {
-    // 选择目的工作台
-    auto station_ptr = chooseStation(robot);
-    if(station_ptr == nullptr) {
-//        if(robot.object_type)
-//            robot.destroy(stations[robot.to_station]);
-        return ;
-    }
     // 到达工作台
-    if(robot.station_id == robot.to_station) {
+    if(robot.station_id != -1 && robot.station_id == robot.to_station) {
+        auto& station = stations[robot.station_id];
         if(robot.object_type) { // 出售物品
-            if(station_ptr->need_state[robot.object_type] && !station_ptr->material_state[robot.object_type]) robot.sell(*station_ptr);
-            else station_ptr = chooseStation(robot);
+            if(station.need_state[robot.object_type] && !station.material_state[robot.object_type]) robot.sell(station);
         } else { // 购买物品
-            if(station_ptr->product_state) {
-                robot.buy(*station_ptr);
-            } else station_ptr = chooseStation(robot);
+            if(station.product_state) robot.buy(station);
         }
     }
+    // 下次去哪里
+    auto* station_ptr = chooseStation(robot);
     if(station_ptr == nullptr) {
-        robot.destroy(stations[robot.to_station]);
+//        robot.destroy(stations[robot.to_station]);
+//        cerr << "Can NOT found!" << endl;
         return ;
     }
     // 根据目的地调整机器人状态
