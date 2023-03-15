@@ -240,7 +240,8 @@ public:
 // 全局变量
 vector<Robot> robots;
 vector<Station> stations;
-vector<int> station_seq;
+vector<int> station_seq; // 排序用seq
+vector<int> station_lru; // LRU算法确定station类型
 int curr_money;
 int station_num;
 vector<vector<double>> dis_matrix;
@@ -258,6 +259,8 @@ void init() {
             dis_matrix[i][j] = dis_matrix[j][i] = stations[i].calc_dis(stations[j]);
         }
     }
+    // 初始化LRU
+    for(int i = 1; i <= STATION_TYPES_NUM; i ++) station_lru.push_back(i);
 }
 
 // 读取地图
@@ -314,6 +317,23 @@ inline bool double_equal(double x, double y) {
 // 符号函数
 inline int sgn(double x) {
     return x >= 0 ? 1 : -1;
+}
+
+// 获取type在LRU中的位置
+inline int get_lru_pos(int type) {
+    return find(station_lru.begin(), station_lru.end(), type) - station_lru.begin();
+}
+
+// 更新LRU
+void update_station_lru(Station& station) {
+    int pos = get_lru_pos(station.type);
+//    for(int i = 0; i < STATION_TYPES_NUM; i ++) {
+//        cerr << station_lru[i] << " ";
+//    }
+//    cerr << endl;
+    for(int i = pos; i < STATION_TYPES_NUM - 1; i ++) {
+        swap(station_lru[i], station_lru[i + 1]);
+    }
 }
 
 // 获取需要当前工作台产物的所有工作台的最短距离
@@ -463,7 +483,10 @@ int chooseStation(Robot& robot) {
         }
     }
     sort(station_seq.begin(), station_seq.end(), [&](const int& x, const int& y) {
-        return robot.calc_dis(stations[x]) < robot.calc_dis(stations[y]);
+//        if(stations[x].type == stations[y].type)
+            return robot.calc_dis(stations[x]) < robot.calc_dis(stations[y]);
+//        else
+//            return get_lru_pos(stations[x].type) < get_lru_pos(stations[y].type);
 //        return calc_time_val(robot, stations[x]) * objects[stations[x].product].buy_money - objects[stations[x].product].buy_money >
 //                calc_time_val(robot, stations[y]) * objects[stations[y].product].buy_money - objects[stations[y].product].buy_money;
     });
@@ -473,7 +496,8 @@ int chooseStation(Robot& robot) {
             if(stations[i].check_valid(robot.object_type))
                 return i;
         } else { // 没带
-            if(stations[i].product_state && !stations[i].chosen_state[stations[i].product] && judge_product(stations[i].product))
+            //  || (stations[i].prod_time > 0 && robot.calc_dis(stations[i]) * FRAMES_PER_SECOND > stations[i].prod_time * SPEED_POSITIVE_MAX)
+            if((stations[i].product_state) && !stations[i].chosen_state[stations[i].product] && judge_product(stations[i].product))
                 return i;
         }
     }
@@ -518,10 +542,18 @@ void generateStrategy(Robot& robot) {
     if(robot.station_id != -1 && robot.station_id == robot.to_station) {
         auto& station = stations[robot.station_id];
         if(robot.object_type) { // 出售物品
-            if(station.need_state[robot.object_type] && !station.material_state[robot.object_type]) robot.sell(station);
+            if(station.need_state[robot.object_type] && !station.material_state[robot.object_type]) {
+                robot.sell(station);
+//                update_station_lru(station);
+            }
         } else { // 购买物品
 //            if(station.product_state) robot.buy(station);
-            if(station.product_state) if(frameID < TIME_SCALE - FRAMES_PER_SECOND * 3) robot.buy(station);
+            if(station.product_state){
+                if(frameID < TIME_SCALE - FRAMES_PER_SECOND * 3) {
+                    robot.buy(station);
+                    update_station_lru(station);
+                }
+            }
         }
     }
     // 下次去哪里
@@ -539,6 +571,21 @@ void generateStrategy(Robot& robot) {
     }
     // 根据目的地调整机器人状态
     adjustRobotStatus(robot, stations[station_id]);
+}
+
+// 调整策略
+void optimizeStrategy(){
+    for(int i = 0; i < ROBOTS_NUM; i ++) {
+        for(int j = i + 1; j < ROBOTS_NUM; j ++) {
+            if(robots[i].to_station != -1 && robots[i].to_station != -1 && robots[i].object_type == robots[j].object_type) {
+                // TODO: 优化判断距离的方式
+                if((robots[i].calc_dis(stations[robots[i].to_station]) + robots[j].calc_dis(stations[robots[j].to_station])) >
+                (robots[i].calc_dis(stations[robots[j].to_station]) + robots[j].calc_dis(stations[robots[i].to_station]))) {
+                    swap(robots[i].to_station, robots[j].to_station);
+                }
+            }
+        }
+    }
 }
 
 void judge_col() {
@@ -577,6 +624,7 @@ int main() {
             generateStrategy(robots[robotId]);
 //            if(robotId == 0) print_robot_info(robots[robotId]);
         }
+        optimizeStrategy();
 //        judge_col();
 //        print_frame_info(frameID);
         printf("OK\n");
