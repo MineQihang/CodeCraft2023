@@ -5,6 +5,8 @@
 #include <cmath>
 #include <algorithm>
 #include <bitset>
+#include <queue>
+#include <map>
 
 using namespace std;
 
@@ -107,8 +109,20 @@ public:
         return this->need_state.count() - this->material_state.count();
     }
 
+    bool can_sell(int object_type) {
+        return this->need_state[object_type] && !this->material_state[object_type];
+    }
+
+    bool can_buy() {
+        return this->product_state;
+    }
+
+    bool check_chosen(int object_type) {
+        return this->chosen_state[object_type];
+    }
+
     bool check_valid(int obj) {
-        return !this->chosen_state[obj] && this->need_state[obj] && !this->material_state[obj];
+        return can_sell(obj) && !check_chosen(obj);
     }
 };
 
@@ -124,13 +138,15 @@ public:
     double line_speed_x, line_speed_y, line_speed{}; // 线速度
     double direction; // 朝向
 
-    int to_station; // 想要去的station的id：-1, [0, station_num - 1]
     double mass{}; // 质量
     double alpha{}; // 角加速度
     double radius{}; // 半径
     double a{}; // 加速度
     double run_time{}; // 运输了多久了
     double expect_time{};
+
+    int to_station; // 想要去的station的id：-1, [0, station_num - 1]
+    int buy_station{}, sell_station{}; // 在哪里购买，在哪里出售
 
     Robot(int id, double x, double y): id(id), x(x), y(y) {
         to_station = -1;
@@ -181,6 +197,7 @@ public:
         cancel_choose_station(station, station.product);
         this->object_type = station.product;
         update_status(true);
+        this->to_station = this->sell_station;
     }
 
     void sell(Station& station) {
@@ -189,7 +206,10 @@ public:
          */
         printf("sell %d\n", this->id);
         cancel_choose_station(station, this->object_type);
+        station.material_state[this->object_type] = true;
         this->object_type = 0;
+        this->buy_station = -1;
+        this->sell_station = -1;
         update_status(false);
     }
 
@@ -235,6 +255,10 @@ public:
         this->to_station = -1;
         station.chosen_state[obj] = false;
     }
+
+    bool check_arrived() {
+        return this->to_station != -1 && this->to_station == this->station_id;
+    }
 };
 
 // 全局变量
@@ -246,6 +270,8 @@ int curr_money;
 int station_num;
 vector<vector<double>> dis_matrix;
 int frameID;
+vector<vector<int>> obj_stations_buy(OBJECT_TYPES_NUM + 1), obj_stations_sell(OBJECT_TYPES_NUM + 1);
+map<pair<int, int>, double> book;
 
 // 初始化
 void init() {
@@ -261,6 +287,12 @@ void init() {
     }
     // 初始化LRU
     for(int i = 1; i <= STATION_TYPES_NUM; i ++) station_lru.push_back(i);
+    // 初始化购买stations和出售stations
+    for(int i = 0; i < station_num; i ++) {
+        auto basic_station = basic_stations[stations[i].type];
+        if(basic_station.product != -1) obj_stations_buy[basic_station.product].push_back(i);
+        for(auto& material : basic_station.material) obj_stations_sell[material].push_back(i);
+    }
 }
 
 // 读取地图
@@ -445,63 +477,35 @@ double calc_time_val(Robot& robot, Station& station) {
 }
 
 // 选择要去哪个工作台
-int chooseStation(Robot& robot) {
-    if(robot.to_station != -1) {
-        if(robot.object_type) {
-            if(!stations[robot.to_station].material_state[robot.object_type]){
-                return robot.to_station;
-            } else {
-                stations[robot.to_station].chosen_state[robot.object_type] = false;
-                robot.to_station = -1;
-            }
-        } else {
-            if(judge_product(stations[robot.to_station].product)) {
-                int prv_station_id = robot.to_station;
-                // 解除前往
-                robot.to_station = -1;
-                stations[prv_station_id].chosen_state[stations[prv_station_id].product] = false;
-                // 重新选择
-                int station_id = chooseStation(robot);
-                // 判断有没有现在的好
-                if(station_id != -1) {
-                    if(robot.calc_dis(stations[station_id]) + 20 < robot.calc_dis(stations[prv_station_id])) { // 好
-                        robot.to_station = station_id;
-                        stations[station_id].chosen_state[stations[station_id].product] = true;
-                    } else { // 不好
-                        robot.to_station = prv_station_id;
-                        stations[prv_station_id].chosen_state[stations[prv_station_id].product] = true;
-                    }
-                } else { // 没找到
-                    robot.to_station = prv_station_id;
-                    stations[prv_station_id].chosen_state[stations[prv_station_id].product] = true;
+void chooseStation(Robot& robot) {
+    if(robot.to_station != -1) return ;
+    priority_queue<pair<double, pair<int, int>>> q;
+    for(int i = 0; i < station_num; i ++) {
+        int product = stations[i].product;
+        if(product != -1 && !stations[i].check_chosen(product) && stations[i].can_buy()) {
+            for(auto& j : obj_stations_sell[product]) {
+                if(stations[j].can_sell(product) && !stations[j].check_chosen(product)){
+                    double rate;
+//                    if(book.count({i, j})) rate = book[{i, j}];
+//                    else {
+                        double t = (robot.calc_dis(stations[i]) + stations[i].calc_dis(stations[j])) / SPEED_POSITIVE_MAX;
+                        double time_val = (1 - sqrt(1 - pow(1 - t / TIME_SCALE, 2))) * (1 - 0.8) + 0.8;
+                        double profit = objects[product].sell_money * time_val - objects[product].buy_money;
+                        rate = profit / t;
+//                    }
+                    q.push({rate, {i, j}});
                 }
-                return robot.to_station;
-            } else {
-                stations[robot.to_station].chosen_state[stations[robot.to_station].product] = false;
-                robot.to_station = -1;
             }
         }
     }
-    sort(station_seq.begin(), station_seq.end(), [&](const int& x, const int& y) {
-//        if(stations[x].type == stations[y].type)
-            return robot.calc_dis(stations[x]) < robot.calc_dis(stations[y]);
-//        else
-//            return get_lru_pos(stations[x].type) < get_lru_pos(stations[y].type);
-//        return calc_time_val(robot, stations[x]) * objects[stations[x].product].buy_money - objects[stations[x].product].buy_money >
-//                calc_time_val(robot, stations[y]) * objects[stations[y].product].buy_money - objects[stations[y].product].buy_money;
-    });
-    for(int j = 0; j < station_num; j ++) {
-        int i = station_seq[j];
-        if(robot.object_type) { // 带着东西的
-            if(stations[i].check_valid(robot.object_type))
-                return i;
-        } else { // 没带
-            //  || (stations[i].prod_time > 0 && robot.calc_dis(stations[i]) * FRAMES_PER_SECOND > stations[i].prod_time * SPEED_POSITIVE_MAX)
-            if((stations[i].product_state) && !stations[i].chosen_state[stations[i].product] && judge_product(stations[i].product))
-                return i;
-        }
-    }
-    return -1;
+    if(q.empty()) return ;
+    auto& [_, temp] = q.top();
+    auto& [buy_station, sell_station] = temp;
+    robot.buy_station = robot.to_station = buy_station;
+    stations[robot.to_station].chosen_state[stations[robot.to_station].product] = true;
+    robot.sell_station = sell_station;
+    stations[robot.sell_station].chosen_state[stations[robot.to_station].product] = true;
+//    cerr << robot.id << " " << robot.buy_station << " " << robot.sell_station << " " << stations[robot.to_station].product << endl;
 }
 
 // 调整机器人姿态（预期角速度和线速度）
@@ -516,7 +520,7 @@ void adjustRobotStatus(Robot& robot, Station& station) {
 //            line_speed = -2;
 //            angular_speed *= 0.5;
 //            cerr << robot.id << ": CHANGE!" << endl;
-            angular_speed = angular_speed * 0.1 + PI / 2;
+            angular_speed = robot.angular_speed * 0.1 + PI / 2;
 //            angular_speed += PI;
             break;
 //            if(angular_speed <= 0) angular_speed += PI / 2;
@@ -526,51 +530,55 @@ void adjustRobotStatus(Robot& robot, Station& station) {
 //    double min_dis = get_min_col_dis(robot);
 //    if(min_dis <= 2 * ROBOT_RADIUS_BUSY + NEAR_DISTANCE) line_speed *= 0.8;
 //    angular_speed *= (1 - exp(-100 * robot.calc_dis(station)));
-    if(robot.run_time > robot.expect_time) {
-        line_speed *= 0.5;
-    }
+//    if(robot.run_time > robot.expect_time) {
+//        line_speed = line_speed * 0.9;
+//    }
     // 执行
     robot.rotate(angular_speed);
     robot.forward(line_speed);
 }
 
 // 单独为每个机器人分配策略
-void generateStrategy(Robot& robot) {
+void generateStrategyForRobot(Robot& robot) {
     // 更新运送时间
     robot.update_time(false);
-    // 到达工作台
-    if(robot.station_id != -1 && robot.station_id == robot.to_station) {
-        auto& station = stations[robot.station_id];
-        if(robot.object_type) { // 出售物品
-            if(station.need_state[robot.object_type] && !station.material_state[robot.object_type]) {
-                robot.sell(station);
-//                update_station_lru(station);
-            }
-        } else { // 购买物品
-//            if(station.product_state) robot.buy(station);
-            if(station.product_state){
-                if(frameID < TIME_SCALE - FRAMES_PER_SECOND * 3) {
-                    robot.buy(station);
-                    update_station_lru(station);
+    // 还没有策略需要生成策略
+    if(robot.to_station == -1) {
+        chooseStation(robot);
+    } else { // 已经有了策略
+        // 到达工作台
+        if(robot.check_arrived()) {
+            auto& station = stations[robot.station_id];
+            if(robot.object_type) { // 出售物品
+                if(station.can_sell(robot.object_type)) {
+                    book[{robot.buy_station, robot.sell_station}] = objects[robot.object_type].sell_money * robot.time_val * robot.collision_val - objects[robot.object_type].buy_money;
+//                    book[{robot.buy_station, robot.sell_station}] /= 2;
+                    robot.sell(station);
+//                    generateStrategyForRobot(robot);
+//                    return ;
+                }
+            } else { // 购买物品
+//                if(station.can_buy()) robot.buy(station);
+                if(station.product_state){
+                    if(frameID < TIME_SCALE - FRAMES_PER_SECOND * 3) {
+                        robot.buy(station);
+//                        update_station_lru(station);
+                    }
                 }
             }
         }
     }
-    // 下次去哪里
-    int prv_station = robot.to_station;
-    int station_id = chooseStation(robot);
-    if(station_id == -1) return ;
-    if(prv_station != station_id) {
-        robot.update_time(true, &stations[station_id]);
-    }
-    robot.to_station = station_id;
-    if(robot.object_type) { // 带着东西的
-        stations[robot.to_station].chosen_state[robot.object_type] = true;
-    } else { // 没带
-        stations[robot.to_station].chosen_state[stations[robot.to_station].product] = true;
-    }
+    // 没有成功生成策略就无需进行调整了/卖了
+    if(robot.to_station == -1) return ;
     // 根据目的地调整机器人状态
-    adjustRobotStatus(robot, stations[station_id]);
+    adjustRobotStatus(robot, stations[robot.to_station]);
+}
+
+// 生成策略
+void generateStrategy() {
+    for(int robotId = 0; robotId < 4; robotId++){
+        generateStrategyForRobot(robots[robotId]);
+    }
 }
 
 // 调整策略
@@ -593,11 +601,11 @@ void judge_col() {
         for(int j = i + 1; j < ROBOTS_NUM; j ++) {
             if(predict_col(robots[i], robots[j]))
                 cerr << "COL" << " " << i << " " << j << endl;
-//            if(robots[i].calc_dis(robots[j]) <= robots[i].radius + robots[j].radius) {
-//                cerr << "COL" << " " << i << " " << j << endl;
-//                cerr << "speed of " << i << ": " << robots[i].line_speed << ", direction: " << robots[i].direction << ", col_value: " << robots[i].collision_val << ", time_val: " << robots[i].time_val << endl;
-//                cerr << "speed of " << j << ": " << robots[j].line_speed << ", direction: " << robots[j].direction << ", col_value: " << robots[j].collision_val << ", time_val: " << robots[j].time_val << endl;
-//            }
+            if(robots[i].calc_dis(robots[j]) <= robots[i].radius + robots[j].radius) {
+                cerr << "COL" << " " << i << " " << j << endl;
+                cerr << "speed of " << i << ": " << robots[i].line_speed << ", direction: " << robots[i].direction << ", col_value: " << robots[i].collision_val << ", time_val: " << robots[i].time_val << endl;
+                cerr << "speed of " << j << ": " << robots[j].line_speed << ", direction: " << robots[j].direction << ", col_value: " << robots[j].collision_val << ", time_val: " << robots[j].time_val << endl;
+            }
         }
     }
 }
@@ -620,13 +628,8 @@ int main() {
     while (scanf("%d", &frameID) != EOF) {
         readFrameInput();
         printf("%d\n", frameID);
-        for(int robotId = 0; robotId < 4; robotId++){
-            generateStrategy(robots[robotId]);
-//            if(robotId == 0) print_robot_info(robots[robotId]);
-        }
-        optimizeStrategy();
-//        judge_col();
-//        print_frame_info(frameID);
+        generateStrategy();
+//        optimizeStrategy();
         printf("OK\n");
         fflush(stdout);
     }
