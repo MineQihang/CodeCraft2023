@@ -73,7 +73,7 @@ const vector<BasicStation> basic_stations = {
         {6, {2, 3}, 0b00001100, 500, 6},
         {7, {4, 5, 6}, 0b01110000, 1000, 7},
         {8, {7}, 0b10000000, 1, -1},
-        {9, {1, 2, 3, 4, 5, 6, 7}, 0b11111110, 1, -1},
+        {9, {7}, 0b11111110, 1, -1}, // TODO: 1, 2, 3, 4, 5, 6, 7
 };
 
 // 计算距离 // TODO: 不使用欧式距离
@@ -319,6 +319,68 @@ vector<vector<int>> obj_stations_buy(OBJECT_TYPES_NUM + 1); // [x, [y1, y2, ...]
 vector<vector<int>> obj_stations_sell(OBJECT_TYPES_NUM + 1);// [x, [y1, y2, ...]] 可以卖x的工作台有[y1, y2, ...](工作台以x为原料)
 map<pair<int, int>, double> book; // 记录从x到y能获得的利润
 
+// 任务
+class Task {
+public:
+    int from{};  // 去哪买
+    int to{};    // 去哪卖
+    int obj{};
+    int level{}; // 优先级
+    int need_num{};
+    Task() = default;
+    Task(int _from, int _to, int _obj, int _level, int _need_num): from(_from), to(_to), obj(_obj), level(_level), need_num(_need_num) {};
+
+    bool operator < (const Task other) const {
+        if(level == other.level) {
+//            if(need_num == other.need_num)
+            return need_num > other.need_num;
+        } else return level < other.level;
+    }
+};
+
+// 控制器
+class Controller{
+public:
+    priority_queue<Task> tasks;
+
+    void init() {
+
+    }
+
+    void updateTasks() {
+        while(!tasks.empty()) tasks.pop();
+        for(int obj = OBJECT_TYPES_NUM; obj >= 1; obj --) {
+            for(auto& buy_station_id : obj_stations_buy[obj]) {
+                for(auto& sell_station_id : obj_stations_sell[obj]) {
+                    auto& sell_station = stations[sell_station_id];
+                    int level;
+//                    if(sell_station.product == -1) level = 8;
+//                    else if(sell_station.type == 8) level = -1;
+//                    else
+                        level = sell_station.product;
+                    tasks.emplace(buy_station_id, sell_station_id, obj, level, sell_station.count_need());
+                }
+            }
+        }
+    }
+
+    void requestStrategy(Robot& robot) {
+        updateTasks();
+        while(!tasks.empty()) {
+            auto task = tasks.top();
+            tasks.pop();
+            auto [buy_station_id, sell_station_id, obj, _, __] = task;
+            auto& buy_station = stations[buy_station_id];
+            auto& sell_station = stations[sell_station_id];
+            if(buy_station.can_buy() && sell_station.can_sell(obj) && !buy_station.check_chosen(obj) && !sell_station.check_chosen(obj)){
+                robot.add_path(buy_station, obj);
+                robot.add_path(sell_station, obj);
+                break;
+            }
+        }
+    }
+} controller;
+
 namespace RobotMove{
     // 判断两个浮点数相等
     inline bool double_equal(double x, double y) {
@@ -532,27 +594,23 @@ namespace Strategy{
         robot.update_time(false);
         // 还没有策略需要生成策略
         if(robot.to_station == -1) {
-            chooseStation(robot);
-//            if(robot.path.empty()) return ;
-//            robot.x = stations[robot.path.back()].x, robot.y = stations[robot.path.back()].y;
-//            chooseStation(robot);
+            controller.requestStrategy(robot);
             robot.next_station();
-//            cerr << robot.to_station << endl;
         } else { // 已经有了策略
             // 到达工作台
             if(robot.check_arrived()) {
                 auto& station = stations[robot.station_id];
                 if(robot.object_type) { // 出售物品
                     if(station.can_sell(robot.object_type)) {
-//                        book[{robot.buy_station, robot.sell_station}] = objects[robot.object_type].sell_money * robot.time_val * robot.collision_val - objects[robot.object_type].buy_money;
                         robot.sell(station);
+//                        robot.next_station();
                     }
                 } else { // 购买物品
-//                if(station.can_buy()) robot.buy(station);
                     if(station.product_state){
-                        if(frameID < TIME_SCALE - robot.calc_time(stations[robot.path.front()]) * FRAMES_PER_SECOND) {
+                        // TODO: 优化最后的时间【其实就是优化距离时间】 这里固定为3秒
+                        if(frameID < TIME_SCALE - 3 * FRAMES_PER_SECOND) {
                             robot.buy(station);
-//                        update_station_lru(station);
+//                            robot.next_station();
                         }
                     }
                 }
@@ -583,6 +641,8 @@ void init() {
         if(basic_station.product != -1) obj_stations_buy[basic_station.product].push_back(i);
         for(auto& material : basic_station.material) obj_stations_sell[material].push_back(i);
     }
+    // 初始化controller
+    controller.init();
 }
 
 // 读取地图
@@ -668,7 +728,7 @@ int main() {
         readFrameInput();
         printf("%d\n", frameID);
         generateStrategy();
-        optimizeStrategy();
+//        optimizeStrategy();
         printf("OK\n");
         fflush(stdout);
     }
