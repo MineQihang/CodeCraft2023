@@ -151,6 +151,7 @@ public:
 class Robot {
 public:
     int id;         // 机器人标识：[0,3]
+    int tid;        // 策略标识
     double x, y;    // 机器人坐标
     int station_id; // 当前所在station的id：-1, [0, station_num - 1]
     int object_type;// 携带的物品的类型：0, [1, 7]
@@ -170,6 +171,7 @@ public:
     queue<int> path;
 
     Robot(int id, double x, double y): id(id), x(x), y(y) {
+        tid = id;
         to_station = -1;
         station_id = -1;
         object_type = -1;
@@ -212,14 +214,10 @@ public:
     void next_station() {
         /* 进入下一个地方
          */
-        if(path.empty()) {
-            to_station = -1;
-//            cerr << "hi" << endl;
-        }
+        if(path.empty()) to_station = -1;
         else {
             to_station = path.front();
             path.pop();
-//            cerr << path.size() << endl;
         }
     }
 
@@ -261,14 +259,14 @@ public:
         /* 计算当前机器人到另一个机器人的欧式距离
          * @param other: 其他机器人
          */
-        return sqrt(pow(this->x - other.x, 2) + pow(this->y - other.y, 2));
+        return _calc_dis(x, y, other.x, other.y);
     }
 
     double calc_dis(Station& station) const {
         /* 计算当前机器人到一个工作台的欧氏距离
          * @param station: 工作台
          */
-        return sqrt(pow(this->x - station.x, 2) + pow(this->y - station.y, 2));
+        return _calc_dis(x, y, station.x, station.y);
     }
 
     void update_time(bool state, Station* station = nullptr) {
@@ -277,7 +275,6 @@ public:
          * @param station: ptr 根据station计算距离从而计算预期时间
          */
         if(state) {
-//            cerr << "run time: " << this->run_time << endl;
             this->run_time = 0;
             if(station != nullptr)
                 this->expect_time = this->calc_dis(*station) / SPEED_POSITIVE_MAX * 5;
@@ -312,17 +309,12 @@ public:
 // 全局变量
 vector<Robot> robots;
 vector<Station> stations;
-vector<int> station_seq; // 排序用seq
-vector<int> station_lru; // LRU算法确定station类型
 int frameID;    // 当前帧数
 int curr_money; // 当前还剩多少钱
 int station_num;// 工作台的总数量
-vector<vector<int>> obj_stations_buy(OBJECT_TYPES_NUM + 1); // [x, [y1, y2, ...]] 可以买x的工作台有[y1, y2, ...](工作台产品是x)
-vector<vector<int>> obj_stations_sell(OBJECT_TYPES_NUM + 1);// [x, [y1, y2, ...]] 可以卖x的工作台有[y1, y2, ...](工作台以x为原料)
-map<pair<int, int>, double> book; // 记录从x到y能获得的利润
 int map_id;
 
-// 任务
+// 任务 TODO: 不知道需不需要
 class Task {
 public:
     int from{};  // 去哪买
@@ -421,12 +413,13 @@ public:
     }
 
     void requestStrategyFor3(Robot& robot) {
-        if(robot.id == 0) {
+        if(robot.tid == 0) {
             if(stations[4].product_state) {
                 robot.add_path(stations[4], 5);
                 robot.add_path(stations[24], 5);
+//                robot.tid = 3;
             } else {
-                if(!stations[4].material_state[1]) {
+                if(stations[4].can_sell(1) && !stations[4].check_chosen(1)) {
                     robot.add_path(stations[6], 1);
                     robot.add_path(stations[4], 1);
                 } else {
@@ -434,12 +427,13 @@ public:
                     robot.add_path(stations[4], 3);
                 }
             }
-        }else if(robot.id == 1){
+        }else if(robot.tid == 1){
             if(stations[27].product_state) {
                 robot.add_path(stations[27], 4);
                 robot.add_path(stations[24], 4);
+//                robot.tid = 2;
             } else {
-                if(!stations[27].material_state[1]) {
+                if(stations[27].can_sell(1) && !stations[27].check_chosen(1)) {
                     robot.add_path(stations[15], 1);
                     robot.add_path(stations[27], 1);
                 } else {
@@ -447,12 +441,13 @@ public:
                     robot.add_path(stations[27], 2);
                 }
             }
-        } else if(robot.id == 2) {
+        } else if(robot.tid == 2) {
             if(stations[23].product_state) {
                 robot.add_path(stations[23], 6);
                 robot.add_path(stations[24], 6);
+//                robot.tid = 1;
             } else {
-                if(!stations[23].material_state[2]) {
+                if(stations[23].can_sell(2) && !stations[23].check_chosen(2)) {
                     robot.add_path(stations[16], 2);
                     robot.add_path(stations[23], 2);
                 } else {
@@ -464,8 +459,9 @@ public:
             if(stations[45].product_state) {
                 robot.add_path(stations[45], 5);
                 robot.add_path(stations[24], 5);
+//                robot.tid = 0;
             } else {
-                if(!stations[45].material_state[1]) {
+                if(stations[45].can_sell(1) && !stations[45].check_chosen(1)) {
                     robot.add_path(stations[36], 1);
                     robot.add_path(stations[45], 1);
                 } else {
@@ -484,6 +480,7 @@ public:
             requestStrategyFor3(robot);
             return ;
         }
+        // TODO: 优化通用算法
         update();
         int from, to;
         bool flag = false;
@@ -532,9 +529,6 @@ public:
         });
         for(auto [x, y] : v) {
             int obj = stations[x].product;
-            //  && !stations[x].check_chosen(obj) && !stations[y].check_chosen(obj)
-//            double time1 = robot.calc_time(stations[x]);
-//            double time2 = time1 + stations[x].calc_time(stations[y]);
             if(stations[x].can_buy() && stations[y].can_sell(obj) && !stations[x].check_chosen(obj) && !stations[y].check_chosen(obj)) {
                 robot.add_path(stations[x], obj);
                 robot.add_path(stations[y], obj);
@@ -581,6 +575,7 @@ namespace RobotMove{
         double min_d = robot1.radius + robot2.radius;
         double x1 = robot1.x, x2 = robot2.x;
         double y1 = robot1.y, y2 = robot2.y;
+        // TODO: 究竟应该选哪个方向角嘞？
 //        double theta1 = robot1.direction, theta2 = robot2.direction;
         double theta1 = atan2(robot1.line_speed_y, robot1.line_speed_x), theta2 = atan2(robot2.line_speed_y, robot2.line_speed_x);
         double v1 = robot1.line_speed, v2 = robot2.line_speed;
@@ -611,10 +606,12 @@ namespace RobotMove{
 
     // 根据始末坐标控制前进速度
     inline double get_forward_speed(Robot& robot, Station& station) {
+        // 1.距离station近的时候速度慢一些 TODO: 怎么实现？
         double d = robot.calc_dis(station);
 //        if(robot.line_speed * robot.line_speed / 2 / robot.a >= d) return 0;
         if(d <= NEAR_DISTANCE + robot.radius + MAX_UNIT_DIS && robot.line_speed > 1) return 0;
-        // 避免撞墙
+//        if((d - NEAR_DISTANCE - MAX_UNIT_DIS) * 2 * robot.a <= pow(robot.line_speed, 2) * fabs(sin(robot.direction)) && robot.line_speed > SPEED_POSITIVE_MAX / 2) return 0;
+        // 2. 避免撞墙 TODO: 是否可以改进？
         double min_dis = get_min_col_dis(robot, 1);
         double k = 1;
         if(map_id == 1) k = 2;
@@ -641,29 +638,16 @@ namespace RobotMove{
         double angular_speed = get_angular_speed(robot, station);
         // 确定速度
         double line_speed = get_forward_speed(robot, station);
-        // 调整一下
-        for(int i = 0; i < ROBOTS_NUM; i ++) {
-            if(i != robot.id && double_equal(fabs(robot.direction - robots[i].direction), PI) && predict_col(robot, robots[i])) { //  && predict_col(robot, robots[i])
-//            line_speed = -2;
-//            angular_speed *= 0.5;
-//            cerr << robot.id << ": CHANGE!" << endl;
-//                if(map_id == 1) angular_speed -= PI;
-//            angular_speed += PI;
-//                break;
-//            if(angular_speed <= 0) angular_speed += PI / 2;
-//            else angular_speed -= PI / 2;
-//                cerr << "Hi" << endl;
+        // 调整一下 TODO: 优化碰撞
+        for(int i = 0; i < ROBOTS_NUM; i ++) { // double_equal(fabs(robot.direction - robots[i].direction), PI)
+            if(i != robot.id && ((robot.direction > 0) ^ (robots[i].direction > 0)) && predict_col(robot, robots[i])) { //  && predict_col(robot, robots[i])
+//                line_speed = -2;
+//                angular_speed = robot.angular_speed * 0.1 + PI / 2;
             }
         }
-//    double min_dis = get_min_col_dis(robot);
-//    if(min_dis <= 2 * ROBOT_RADIUS_BUSY + NEAR_DISTANCE) line_speed *= 0.8;
-//    angular_speed *= (1 - exp(-100 * robot.calc_dis(station)));
-//    if(robot.run_time > robot.expect_time) {
-//        line_speed = line_speed * 0.9;
-//    }
         // 执行
         robot.rotate(angular_speed);
-        robot.forward(line_speed);
+        robot.forward(line_speed); // if(fabs(angular_speed) <= PI / 2)
     }
 };
 
@@ -717,8 +701,14 @@ namespace Strategy{
 
 // 初始化
 void init() {
-    // station id序列，方便之后排序
-    for(int i = 0; i < station_num; i ++) station_seq.push_back(i);
+    // 初始化地图id
+    switch (station_num) {
+        case 43: map_id = 1; break;
+        case 25: map_id = 2; break;
+        case 50: map_id = 3; break;
+        case 18: map_id = 4; break;
+        default: break;
+    }
     // 计算工作台间的距离矩阵
     dis_matrix = vector<vector<double>>(station_num, vector<double>(station_num, 0x3f3f3f3f));
     for(int i = 0; i < station_num; i ++) {
@@ -727,17 +717,8 @@ void init() {
             dis_matrix[i][j] = dis_matrix[j][i] = stations[i].calc_dis(stations[j], true);
         }
     }
-    // 初始化LRU
-    for(int i = 1; i <= STATION_TYPES_NUM; i ++) station_lru.push_back(i);
     // 初始化controller
     controller.init();
-    switch (station_num) {
-        case 43: map_id = 1; break;
-        case 25: map_id = 2; break;
-        case 50: map_id = 3; break;
-        case 18: map_id = 4; break;
-        default: break;
-    }
     if(map_id == 3) controller.edge[9] = {6, 5, 4};
 }
 
