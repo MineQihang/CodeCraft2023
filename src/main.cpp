@@ -8,6 +8,7 @@
 #include <queue>
 #include <map>
 #include <stack>
+#include <random>
 
 using namespace std;
 
@@ -30,7 +31,6 @@ const double ROBOT_MAX_FORCE = 250; // 最大牵引力(N)，机器人的加速/�
 const double ROBOT_TORQUE = 50; // 最大力矩(N*m)，机器人的旋转由力矩驱动
 const double EPS = 5e-1; // 最大偏差
 const double MAX_UNIT_DIS = SPEED_POSITIVE_MAX / FRAMES_PER_SECOND; // 最小单位距离
-const int PREDICT_TIME = FRAMES_PER_SECOND * 3; // 碰撞预测帧数
 
 /***基础类***/
 // 物品
@@ -169,6 +169,8 @@ public:
 
     int to_station; // 想要去的station的id：-1, [0, station_num - 1]
     queue<int> path;
+    bool col_state{};
+    double col_time{};
 
     Robot(int id, double x, double y): id(id), x(x), y(y) {
         tid = id;
@@ -230,6 +232,7 @@ public:
         this->object_type = station.product;
         update_physical_status(true);
         next_station();
+        update_time(true);
     }
 
     void sell(Station& station) {
@@ -242,6 +245,7 @@ public:
         this->object_type = 0;
         update_physical_status(false);
         next_station();
+        update_time(true);
     }
 
     void destroy(Station& station) {
@@ -276,9 +280,11 @@ public:
          */
         if(state) {
             this->run_time = 0;
+            this->col_time = 0;
             if(station != nullptr)
                 this->expect_time = this->calc_dis(*station) / SPEED_POSITIVE_MAX * 5;
-        } else this->run_time += 1.0 / FRAMES_PER_SECOND;
+        } else this->run_time += 1.0 / FRAMES_PER_SECOND, this->col_time += 1.0 / FRAMES_PER_SECOND;
+        if(col_time > 1) col_state = false;
     }
 
     void choose_station(Station& station, int obj) {
@@ -303,6 +309,11 @@ public:
 
     double calc_time(Station& station) const {
         return _calc_time(calc_dis(station));
+    }
+
+    void retreat() {
+        col_state = true;
+        col_time = 0;
     }
 };
 
@@ -333,6 +344,7 @@ public:
     vector<vector<int>> station_list;
     vector<int> station_product_state;
     vector<vector<int>> book_matrix;
+    vector<int> station_seq;
     int tid{};
 
     void init() {
@@ -349,6 +361,7 @@ public:
         station_list = vector<vector<int>>(STATION_TYPES_NUM + 1);
         for(auto& station : stations) {
             station_list[station.type].push_back(station.id);
+            station_seq.push_back(station.id);
         }
         station_product_state = vector<int>(STATION_TYPES_NUM, 0);
         update();
@@ -363,13 +376,29 @@ public:
             if(station.product_state && !station.check_chosen(station.product))
                 station_product_state[station.product] = 1;
         }
+//        for(auto& y : edge) {
+//            reverse(y.begin(), y.end());
+//        }
     }
 
-    void requestStrategyFor1(Robot& robot){
+    // 判断产品有没有被其他的地方所需要
+    bool judge_product(int object_type) {
+        if(object_type <= 0) return false;
+        for(int i = 0; i < station_num; i ++) {
+            if(!stations[i].chosen_state[object_type] && stations[i].need_state[object_type] && !stations[i].material_state[object_type]) return true;
+        }
+        return false;
+    }
+
+    static void requestStrategyFor1(Robot& robot){
+        int where = robot.station_id;
         vector<pair<int, int>> v1 = {{0, 3}, {0, 20}, {41, 20}, {41, 33}, {42, 3}, {42, 33}};
         vector<pair<int, int>> v2 = {{3, 10}, {20, 10}, {33, 10}, {3, 23}, {20, 23}, {33, 23}};
         vector<pair<int, int>> v3 = {{10, 16}, {23, 16}};
-        reverse(v3.begin(), v3.end());
+        // 计算所需4(20), 5(3), 6(33)数量
+//        vector<int> temp(7);
+//        for(int i = 4; i <= 6; i ++)
+//            temp[i] = (int)(!stations[10].material_state[i]) + (int)(!stations[23].material_state[i]);
         for(auto& [x, y] : v3) {
             int obj = stations[x].product;
             if(stations[x].can_buy() && stations[y].can_sell(obj) && !stations[x].check_chosen(obj) && !stations[y].check_chosen(obj)) {
@@ -380,7 +409,9 @@ public:
         }
         reverse(v2.begin(), v2.end());
         sort(v2.begin(), v2.end(), [&](const pair<int, int>& x, const pair<int, int>& y){
-            return stations[x.second].count_need() < stations[y.second].count_need();
+//            if(x.first == y.first)
+                return stations[x.second].count_need() < stations[y.second].count_need();
+//            else return (where == x.first) > (where == y.first);
         });
         for(auto& [x, y] : v2) {
             int obj = stations[x].product;
@@ -392,7 +423,9 @@ public:
         }
         reverse(v1.begin(), v1.end());
         sort(v1.begin(), v1.end(), [&](const pair<int, int>& x, const pair<int, int>& y){
-            return stations[x.second].count_need() < stations[y.second].count_need();
+//            if(x.first == y.first)
+                return stations[x.second].count_need() < stations[y.second].count_need();
+//            else return (where == x.first) > (where == y.first);
         });
         for(auto& [x, y] : v1) {
             int obj = stations[x].product;
@@ -412,7 +445,299 @@ public:
         }
     }
 
-    void requestStrategyFor3(Robot& robot) {
+    static void requestStrategyFor1T(Robot& robot) {
+        if(robot.station_id == 10) {
+            if(stations[10].can_buy() && !stations[10].check_chosen(7)) {
+                robot.add_path(stations[10], 7);
+                robot.add_path(stations[14], 7);
+                return ;
+            }
+        } else if(robot.station_id == 23) {
+            if(stations[23].can_buy() && !stations[23].check_chosen(7)) {
+                robot.add_path(stations[23], 7);
+                robot.add_path(stations[18], 7);
+                return ;
+            }
+        }
+        vector<int> v = {10, 23};
+        sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+            return stations[x].count_need() < stations[y].count_need();
+        });
+        if(robot.tid == 0) {
+            if(stations[20].can_buy()) {
+                for(int x : v) {
+                    if(stations[x].can_sell(4) && !stations[x].check_chosen(4)) {
+                        robot.add_path(stations[20], 4);
+                        robot.add_path(stations[x], 4);
+                        return ;
+                    }
+                }
+            }
+            if(stations[20].can_sell(1)&& !stations[20].check_chosen(1) && !stations[0].check_chosen(1)) {
+                robot.add_path(stations[0], 1);
+                robot.add_path(stations[20], 1);
+                return ;
+            } else if(stations[20].can_sell(2)&& !stations[20].check_chosen(2) && !stations[41].check_chosen(2)) {
+                robot.add_path(stations[41], 2);
+                robot.add_path(stations[20], 2);
+                return ;
+            }
+        } else if(robot.tid == 1) {
+            if(stations[3].can_buy()) {
+                for(int x : v) {
+                    if(stations[x].can_sell(5) && !stations[x].check_chosen(5)) {
+                        robot.add_path(stations[3], 5);
+                        robot.add_path(stations[x], 5);
+                        return ;
+                    }
+                }
+            }
+            if(stations[3].can_sell(1)&& !stations[3].check_chosen(1) && !stations[0].check_chosen(1)) {
+                robot.add_path(stations[0], 1);
+                robot.add_path(stations[3], 1);
+                return ;
+            } else if(stations[3].can_sell(3)&& !stations[3].check_chosen(3) && !stations[42].check_chosen(3)) {
+                robot.add_path(stations[42], 3);
+                robot.add_path(stations[3], 3);
+                return ;
+            }
+        } else if (robot.tid == 2) {
+            if(stations[33].can_buy()) {
+                for(int x : v) {
+                    if(stations[x].can_sell(6) && !stations[x].check_chosen(6)) {
+                        robot.add_path(stations[33], 6);
+                        robot.add_path(stations[x], 6);
+                        return ;
+                    }
+                }
+            }
+            if(stations[33].can_sell(2) && !stations[33].check_chosen(2) && !stations[41].check_chosen(2)) {
+                robot.add_path(stations[41], 2);
+                robot.add_path(stations[33], 2);
+                return ;
+            } else if(stations[33].can_sell(3)&& !stations[33].check_chosen(3) && !stations[42].check_chosen(3)) {
+                robot.add_path(stations[42], 3);
+                robot.add_path(stations[33], 3);
+                return ;
+            }
+        } else {
+            robot.add_path(stations[37], 3);
+            return ;
+        }
+    }
+
+    static void requestStrategyFor2T(Robot& robot){
+        // 7 -> 8
+        if(robot.station_id == 3) {
+            if(stations[3].can_buy() && !stations[3].check_chosen(7)) {
+                robot.add_path(stations[3], 7);
+                robot.add_path(stations[10], 7);
+                return ;
+            }
+        } else if(robot.station_id == 21) {
+            if(stations[21].can_buy() && !stations[21].check_chosen(7)) {
+                robot.add_path(stations[21], 7);
+                robot.add_path(stations[14], 7);
+                return ;
+            }
+        }
+        // robots
+        vector<int> v = {3, 21};
+        if(robot.tid == 0) {
+            if(stations[3].can_buy() && !stations[3].check_chosen(7)) {
+                robot.add_path(stations[3], 7);
+                robot.add_path(stations[10], 7);
+                return ;
+            } else if(stations[21].can_buy() && !stations[21].check_chosen(7)) {
+                robot.add_path(stations[21], 7);
+                robot.add_path(stations[14], 7);
+                return ;
+            }
+            if(stations[12].can_buy()) {
+                sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+                    return stations[x].count_need() < stations[y].count_need();
+                });
+                for(int x : v) {
+                    if(stations[x].can_sell(4) && !stations[x].check_chosen(4)) {
+                        robot.add_path(stations[12], 4);
+                        robot.add_path(stations[x], 4);
+                        return ;
+                    }
+                }
+            }
+            if(stations[12].can_sell(1)) {
+                robot.add_path(stations[4], 1);
+                robot.add_path(stations[12], 1);
+                return ;
+            } else if(stations[12].can_sell(2)) {
+                robot.add_path(stations[6], 2);
+                robot.add_path(stations[12], 2);
+                return ;
+            }
+        } else if(robot.tid == 1) {
+            if(stations[9].can_buy()) {
+                sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+                    return stations[x].count_need() < stations[y].count_need();
+                });
+                for(int x : v) {
+                    if(stations[x].can_sell(5) && !stations[x].check_chosen(5)) {
+                        robot.add_path(stations[9], 5);
+                        robot.add_path(stations[x], 5);
+                        return ;
+                    }
+                }
+            } else if(stations[22].can_buy()) {
+                sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+                    return stations[x].count_need() < stations[y].count_need();
+                });
+                for(int x : v) {
+                    if(stations[x].can_sell(6) && !stations[x].check_chosen(6)) {
+                        robot.add_path(stations[22], 6);
+                        robot.add_path(stations[x], 6);
+                        return ;
+                    }
+                }
+            }
+            if(stations[9].can_sell(3)) {
+                robot.add_path(stations[16], 3);
+                robot.add_path(stations[9], 3);
+                return ;
+            } else if(stations[9].can_sell(1)) {
+                robot.add_path(stations[11], 1);
+                robot.add_path(stations[9], 1);
+                return ;
+            } else if(stations[22].can_sell(3)) {
+                robot.add_path(stations[16], 3);
+                robot.add_path(stations[22], 3);
+                return ;
+            } else if(stations[22].can_sell(2)) {
+                robot.add_path(stations[18], 2);
+                robot.add_path(stations[22], 2);
+                return ;
+            }
+        } else if (robot.tid == 2) {
+            if(stations[2].can_buy()) {
+                sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+                    return stations[x].count_need() < stations[y].count_need();
+                });
+                for(int x : v) {
+                    if(stations[x].can_sell(6) && !stations[x].check_chosen(6)) {
+                        robot.add_path(stations[2], 6);
+                        robot.add_path(stations[x], 6);
+                        return ;
+                    }
+                }
+            } else if(stations[15].can_buy()) {
+                sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+                    return stations[x].count_need() < stations[y].count_need();
+                });
+                for(int x : v) {
+                    if(stations[x].can_sell(5) && !stations[x].check_chosen(5)) {
+                        robot.add_path(stations[15], 5);
+                        robot.add_path(stations[x], 5);
+                        return ;
+                    }
+                }
+            }
+            if(stations[2].can_sell(3) && !stations[2].check_chosen(3)) {
+                robot.add_path(stations[8], 3);
+                robot.add_path(stations[2], 3);
+                return ;
+            } else if(stations[2].can_sell(2)&& !stations[2].check_chosen(2)) {
+                robot.add_path(stations[6], 2);
+                robot.add_path(stations[2], 2);
+                return ;
+            } else if(stations[15].can_sell(3)&& !stations[15].check_chosen(3)) {
+                robot.add_path(stations[8], 3);
+                robot.add_path(stations[15], 3);
+                return ;
+            } else if(stations[15].can_sell(1)&& !stations[15].check_chosen(1)) {
+                robot.add_path(stations[20], 1);
+                robot.add_path(stations[15], 1);
+                return ;
+            }
+        } else {
+            if(stations[24].can_buy()) {
+                sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+                    return stations[x].count_need() < stations[y].count_need();
+                });
+                for(int x : v) {
+                    if(stations[x].can_sell(6) && !stations[x].check_chosen(6)) {
+                        robot.add_path(stations[24], 6);
+                        robot.add_path(stations[x], 6);
+                        return ;
+                    }
+                }
+            } else if(stations[23].can_buy()) {
+                sort(v.begin(), v.end(), [&](const int& x, const int& y) {
+                    return stations[x].count_need() < stations[y].count_need();
+                });
+                for(int x : v) {
+                    if(stations[x].can_sell(5) && !stations[x].check_chosen(5)) {
+                        robot.add_path(stations[23], 5);
+                        robot.add_path(stations[x], 5);
+                        return ;
+                    }
+                }
+            }
+            if (stations[24].can_sell(3) && !stations[24].check_chosen(3)) {
+                robot.add_path(stations[17], 3);
+                robot.add_path(stations[24], 3);
+                return;
+            } else if (stations[24].can_sell(2) && !stations[24].check_chosen(2)) {
+                robot.add_path(stations[19], 2);
+                robot.add_path(stations[24], 2);
+                return;
+            } else if (stations[23].can_sell(3) && !stations[23].check_chosen(3)) {
+                robot.add_path(stations[17], 3);
+                robot.add_path(stations[23], 3);
+                return;
+            } else if (stations[23].can_sell(1) && !stations[23].check_chosen(1)) {
+                robot.add_path(stations[13], 1);
+                robot.add_path(stations[23], 1);
+                return;
+            }
+        }
+        // TODO: 干点其他的
+    }
+
+    void requestStrategyFor2(Robot& robot) {
+        auto f = [](int x){
+            if(x <= 3) return 1;
+            else if(x <= 6) return 2;
+            else if(x == 7) return 3;
+            else return 0;
+        };
+        if(robot.object_type) { // 卖
+            sort(station_seq.begin(), station_seq.end(), [&](const int& x, const int& y){
+                if(stations[x].count_need() == stations[y].count_need())
+                    return robot.calc_dis(stations[x]) < robot.calc_dis(stations[y]);
+                else return stations[x].count_need() < stations[y].count_need();
+            });
+            for(int j = 0; j < station_num; j ++) {
+                auto& station = stations[j];
+                if(station.can_sell(robot.object_type) && !station.check_chosen(robot.object_type)) {
+                    robot.add_path(station, robot.object_type);
+                    return ;
+                }
+            }
+        } else { // 买
+            sort(station_seq.begin(), station_seq.end(), [&](const int& x, const int& y){
+                if(f(stations[x].product) == f(stations[y].product))
+                    return robot.calc_dis(stations[x]) < robot.calc_dis(stations[y]);
+                else return f(stations[x].product) > f(stations[y].product);
+            });
+            for(int j = 0; j < station_num; j ++) {
+                auto& station = stations[j];
+                if(station.can_buy() && !station.check_chosen(station.product) && judge_product(station.product)) {
+                    robot.add_path(station, station.product);
+                    return ;
+                }
+            }
+        }
+    }
+
+    static void requestStrategyFor3(Robot& robot) {
         if(robot.tid == 0) {
             if(stations[4].product_state) {
                 robot.add_path(stations[4], 5);
@@ -472,16 +797,181 @@ public:
         }
     }
 
+    static void requestStrategyFor3T(Robot& robot) {
+        if(robot.tid == 0) {
+            vector<int> materials = {28, 16};
+            vector<int> products = {11}; // {11, 12, 13, 14, 20, 22, 23, 25, 29, 32, 33, 34};
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    for(auto& material : materials) {
+                        robot.add_path( stations[material], stations[material].product);
+                        robot.add_path( stations[product],  stations[material].product);
+                    }
+                }
+            }
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    robot.add_path(stations[product], stations[product].product);
+                    robot.add_path(stations[24],  stations[product].product);
+                }
+            }
+        }else if(robot.tid == 1){
+            vector<int> materials = {16, 28};
+            vector<int> products = {22}; // {11, 12, 13, 14, 20, 22, 23, 25, 29, 32, 33, 34};
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    for(auto& material : materials) {
+                        robot.add_path( stations[material], stations[material].product);
+                        robot.add_path( stations[product],  stations[material].product);
+                    }
+                }
+            }
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    robot.add_path(stations[product], stations[product].product);
+                    robot.add_path(stations[24],  stations[product].product);
+                }
+            }
+        } else if(robot.tid == 2) {
+            vector<int> materials = {39, 37};
+            vector<int> products = {32}; // {11, 12, 13, 14, 20, 22, 23, 25, 29, 32, 33, 34};
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    for(auto& material : materials) {
+                        robot.add_path( stations[material], stations[material].product);
+                        robot.add_path( stations[product],  stations[material].product);
+                    }
+                }
+            }
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    robot.add_path(stations[product], stations[product].product);
+                    robot.add_path(stations[24],  stations[product].product);
+                }
+            }
+        } else {
+            vector<int> materials = {15, 31};
+            vector<int> products = {27}; // {11, 12, 13, 14, 20, 22, 23, 25, 29, 32, 33, 34};
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    for(auto& material : materials) {
+                        robot.add_path( stations[material], stations[material].product);
+                        robot.add_path( stations[product],  stations[material].product);
+                    }
+                }
+            }
+            for(int i = 0; i < 2; i ++){
+                for(auto& product : products) {
+                    robot.add_path(stations[product], stations[product].product);
+                    robot.add_path(stations[24],  stations[product].product);
+                }
+            }
+        }
+    }
+
+    static void requestStrategyFor4(Robot& robot){
+        // 7 -> 8
+        if(robot.station_id == 0) {
+            if(stations[0].can_buy()) {
+                robot.add_path(stations[0], 7);
+                robot.add_path(stations[16], 7);
+                return ;
+            }
+        }
+        // robots
+        if(robot.tid == 0) {
+            if(stations[10].can_buy() && stations[0].can_sell(5) && !stations[0].check_chosen(5)) {
+                robot.add_path(stations[10], 5);
+                robot.add_path(stations[0], 5);
+                return ;
+            } else if(stations[13].can_buy() && stations[0].can_sell(6) && !stations[0].check_chosen(6)) {
+                robot.add_path(stations[13], 6);
+                robot.add_path(stations[0], 6);
+                return ;
+            } else {
+                if(stations[10].can_sell(3)) {
+                    robot.add_path(stations[7], 3);
+                    robot.add_path(stations[10], 3);
+                    return ;
+                } else if(stations[10].can_sell(1)) {
+                    robot.add_path(stations[1], 1);
+                    robot.add_path(stations[10], 1);
+                    return ;
+                }  else if(stations[13].can_sell(3)) {
+                    robot.add_path(stations[7], 3);
+                    robot.add_path(stations[13], 3);
+                    return ;
+                } else if(stations[13].can_sell(2)) {
+                    robot.add_path(stations[4], 2);
+                    robot.add_path(stations[13], 2);
+                    return ;
+                }
+            }
+        } else if(robot.tid == 1) {
+            if(stations[15].can_buy() && stations[0].can_sell(6) && !stations[0].check_chosen(6)) {
+                robot.add_path(stations[15], 6);
+                robot.add_path(stations[0], 6);
+                return;
+            } else if(stations[12].can_buy() && stations[0].can_sell(5) && !stations[0].check_chosen(5)) {
+                robot.add_path(stations[12], 5);
+                robot.add_path(stations[0], 5);
+                return ;
+            } else {
+                if(stations[15].can_sell(3)) {
+                    robot.add_path(stations[9], 3);
+                    robot.add_path(stations[15], 3);
+                    return ;
+                } else if(stations[15].can_sell(2)) {
+                    robot.add_path(stations[6], 2);
+                    robot.add_path(stations[15], 2);
+                    return ;
+                }  else if(stations[12].can_sell(3)) {
+                    robot.add_path(stations[9], 3);
+                    robot.add_path(stations[12], 3);
+                    return ;
+                } else if(stations[12].can_sell(1)) {
+                    robot.add_path(stations[3], 1);
+                    robot.add_path(stations[12], 1);
+                    return ;
+                }
+            }
+        } else {
+            if(stations[17].can_buy() && stations[0].can_sell(4) && !stations[0].check_chosen(4)) {
+                robot.add_path(stations[17], 4);
+                robot.add_path(stations[0], 4);
+                return;
+            } else {
+                if(stations[17].can_sell(1) && !stations[17].check_chosen(1)) {
+                    robot.add_path(stations[2], 1);
+                    robot.add_path(stations[17], 1);
+                    return ;
+                } else if((stations[17].can_sell(2) || (stations[17].check_chosen(1))) && !stations[17].check_chosen(2)) {
+                    robot.add_path(stations[5], 2);
+                    robot.add_path(stations[17], 2);
+                    return ;
+                }
+            }
+        }
+        // TODO: 干点其他的
+    }
+
     void requestStrategy(Robot& robot) {
         if(map_id == 1) {
             requestStrategyFor1(robot);
             return ;
+        } else if(map_id == 2) {
+//            requestStrategyFor2(robot);
+//            return ;
         } else if(map_id == 3) {
             requestStrategyFor3(robot);
+            return ;
+        } else if(map_id == 4) {
+            requestStrategyFor4(robot);
             return ;
         }
         // TODO: 优化通用算法
         update();
+
         int from, to;
         bool flag = false;
         auto dfs = [&](){
@@ -571,7 +1061,7 @@ namespace RobotMove{
     }
 
     // 预测是否会发生碰撞
-    bool predict_col(Robot& robot1, Robot& robot2) {
+    bool predict_col(Robot& robot1, Robot& robot2, int predict_time=3*FRAMES_PER_SECOND) {
         double min_d = robot1.radius + robot2.radius;
         double x1 = robot1.x, x2 = robot2.x;
         double y1 = robot1.y, y2 = robot2.y;
@@ -580,16 +1070,13 @@ namespace RobotMove{
         double theta1 = atan2(robot1.line_speed_y, robot1.line_speed_x), theta2 = atan2(robot2.line_speed_y, robot2.line_speed_x);
         double v1 = robot1.line_speed, v2 = robot2.line_speed;
         double w1 = robot1.angular_speed, w2 = robot2.angular_speed;
-        auto calc_dis_xy = [](double _x1, double _y1, double _x2, double _y2){
-            return sqrt(pow(_x1 - _x2, 2) + pow(_y1 - _y2, 2));
-        };
         auto update_val = [](double& x, double& y, double& theta, double& v, double& w) {
             x += v * cos(theta) * 1 / FRAMES_PER_SECOND;
             y += v * sin(theta) * 1 / FRAMES_PER_SECOND;
             theta += w * 1 / FRAMES_PER_SECOND;
         };
-        for(int i = 0; i < PREDICT_TIME; i ++) {
-            if(calc_dis_xy(x1, y1, x2, y2) <= min_d) return true;
+        for(int i = 0; i < predict_time; i ++) {
+            if(_calc_dis(x1, y1, x2, y2) <= min_d) return true;
             update_val(x1, y1, theta1, v1, w1);
             update_val(x2, y2, theta2, v2, w2);
         }
@@ -604,49 +1091,95 @@ namespace RobotMove{
         return diff;
     }
 
+    inline double to_positive(double x) {
+        return x >= 0 ? x : 1 + x;
+    }
+
     // 根据始末坐标控制前进速度
-    inline double get_forward_speed(Robot& robot, Station& station) {
+    inline double get_forward_speed(Robot& robot, Station& station, double& delta) {
+//        if(map_id == 3) {
+//            if(fabs(delta) >= PI * 0.6) return 0;
+//        }
         // 1.距离station近的时候速度慢一些 TODO: 怎么实现？
         double d = robot.calc_dis(station);
 //        if(robot.line_speed * robot.line_speed / 2 / robot.a >= d) return 0;
-        if(d <= NEAR_DISTANCE + robot.radius + MAX_UNIT_DIS && robot.line_speed > 1) return 0;
+        if(map_id == 1) {
+            if(d <= NEAR_DISTANCE + robot.radius && robot.line_speed > 1) return 0;
+        } else {
+            if(d <= NEAR_DISTANCE + robot.radius + MAX_UNIT_DIS && robot.line_speed > 1) return 0;
+        }
 //        if((d - NEAR_DISTANCE - MAX_UNIT_DIS) * 2 * robot.a <= pow(robot.line_speed, 2) * fabs(sin(robot.direction)) && robot.line_speed > SPEED_POSITIVE_MAX / 2) return 0;
         // 2. 避免撞墙 TODO: 是否可以改进？
         double min_dis = get_min_col_dis(robot, 1);
         double k = 1;
         if(map_id == 1) k = 2;
-        if((min_dis - robot.radius - k * MAX_UNIT_DIS) * 2 * robot.a <= pow(robot.line_speed, 2) * fabs(sin(robot.direction))) return 0;
+        if(map_id == 3) {
+            if((min_dis - robot.radius - k * MAX_UNIT_DIS) * 2 * robot.a <= pow(robot.line_speed, 2)) return 0;
+        }else {
+            if((min_dis - robot.radius - k * MAX_UNIT_DIS) * 2 * robot.a <= pow(robot.line_speed, 2) * fabs(sin(robot.direction))) return 0;
+        }
 //        if((d - NEAR_DISTANCE - MAX_UNIT_DIS) * 2 * robot.a <= pow(robot.line_speed, 2) * fabs(sin(robot.direction)) && robot.line_speed > SPEED_POSITIVE_MAX / 2) return 0;
 //        if(double_equal(robot.line_speed, robot.angular_speed * 1.9101)) return 0;
         return SPEED_POSITIVE_MAX; // (1 - exp(-d)) * SPEED_POSITIVE_MAX;
     }
 
     // 根据始末坐标控制角速度
-    inline double get_angular_speed(Robot& robot, Station& station) {
+    inline double get_angular_speed(Robot& robot, Station& station, double& delta) {
         double to_direction = atan2(station.y - robot.y, station.x - robot.x);
         double theta_diff = get_theta_diff(robot.direction, to_direction); // robot的朝向和与station的相对角位置的差
-        double delta = theta_diff; // 真正要偏转的角度
+        delta = theta_diff; // 真正要偏转的角度
         double angular_speed = pow(robot.angular_speed, 2) / robot.alpha / 2 >= fabs(delta) ? 0 : sgn(delta) * PI;
 //        double d = robot.calc_dis(station);
 //        angular_speed *= (1 - exp(-3 * d));
         return angular_speed;
     }
 
-    // 调整机器人姿态（预期角速度和线速度）
-    void adjustRobotStatus(Robot& robot, Station& station) {
-        // 确定转向
-        double angular_speed = get_angular_speed(robot, station);
-        // 确定速度
-        double line_speed = get_forward_speed(robot, station);
-        // 调整一下 TODO: 优化碰撞
-        for(int i = 0; i < ROBOTS_NUM; i ++) { // double_equal(fabs(robot.direction - robots[i].direction), PI)
-            if(i != robot.id && ((robot.direction > 0) ^ (robots[i].direction > 0)) && predict_col(robot, robots[i])) { //  && predict_col(robot, robots[i])
-//                line_speed = -2;
-//                angular_speed = robot.angular_speed * 0.1 + PI / 2;
+    // 检测前面有没有机器人
+    bool existRobotForward(Robot& robot) {
+        for(int i = 0; i < ROBOTS_NUM; i ++) {
+            if(robot.id != i) {
+                if(robot.calc_dis(robots[i]) < 5 && double_equal(atan2(robots[i].y - robot.y, robots[i].x - robot.x), robot.direction)) {
+                    return true;
+                }
             }
         }
+        return false;
+    }
+
+    // 调整机器人姿态（预期角速度和线速度）
+    void adjustRobotStatus(Robot& robot, Station& station) {
+        double delta_theta = 0;
+        // 确定转向
+        double angular_speed = get_angular_speed(robot, station, delta_theta);
+        // 确定速度
+        double line_speed = get_forward_speed(robot, station, delta_theta);
+        // 调整一下 TODO: 优化碰撞
+        for(int i = 0; i < ROBOTS_NUM; i ++) { // double_equal(fabs(robot.direction - robots[i].direction), PI)
+            if(map_id == 1) {
+//                if(existRobotForward(robot)) {
+//                    robot.retreat();
+//                }
+//                if(i != robot.id && predict_col(robot, robots[i], FRAMES_PER_SECOND)) {
+//                    if(!robot.object_type) {
+//                    angular_speed = robot.angular_speed * 0.1 + PI / 2;
+//                }
+            } else if(i != robot.id && ((robot.direction > 0) ^ (robots[i].direction > 0)) && predict_col(robot, robots[i])) { //  && predict_col(robot, robots[i])
+//                line_speed = -2;
+//                if(map_id == 3) {
+//                    if(robot.calc_dis(stations[24]) < 5) {
+//                        angular_speed = robot.angular_speed * 0.1 + PI / 3;
+//                    }
+//                }
+                if(map_id == 4) angular_speed = robot.angular_speed * 0.1 + PI / 2;
+            }
+        }
+//        if(map_id == 1) {
+//            if(robot.run_time > robot.expect_time) angular_speed = robot.angular_speed * 0.1 + PI / 2;
+//        }
+//        if(robot.col_state) angular_speed += PI, line_speed = SPEED_POSITIVE_MAX;
         // 执行
         robot.rotate(angular_speed);
+
         robot.forward(line_speed); // if(fabs(angular_speed) <= PI / 2)
     }
 };
@@ -686,7 +1219,9 @@ namespace Strategy{
                 } else { // 购买物品
                     if(station.product_state){
                         // TODO: 优化最后的时间【其实就是优化距离时间】 这里固定为3秒
-                        if(frameID < TIME_SCALE - /*1.5 * robot.calc_time(stations[robot.path.back()])*/ 3 * FRAMES_PER_SECOND) {
+                        double dt = 3;
+//                        dt = 1.5 * robot.calc_time(stations[robot.path.back()]);
+                        if(frameID < TIME_SCALE - dt * FRAMES_PER_SECOND) {
                             robot.buy(station);
 //                            robot.next_station();
                         }
@@ -805,7 +1340,7 @@ int main() {
         readFrameInput();
         printf("%d\n", frameID);
         generateStrategy();
-        if(map_id == 2 || map_id == 4) optimizeStrategy();
+        if(map_id == 2) optimizeStrategy();
         printf("OK\n");
         fflush(stdout);
     }
